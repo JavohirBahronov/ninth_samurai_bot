@@ -1,6 +1,7 @@
 import os
 import logging
-from aiogram import Bot, Dispatcher, executor, types
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils import executor
 from yt_dlp import YoutubeDL
 
 API_TOKEN = os.getenv("BOT_TOKEN")
@@ -23,18 +24,18 @@ QUALITY_OPTIONS = [
 
 @dp.message_handler(commands=['start'])
 async def send_welcome(message: types.Message):
-    await message.answer("Привет! Отправь мне ссылку на видео с YouTube, TikTok, Instagram или др.")
+    await message.answer("👋 Привет! Отправь мне ссылку на видео с YouTube, TikTok, Instagram или другой платформы.")
 
 @dp.message_handler(lambda message: message.text.startswith("http"))
 async def handle_url(message: types.Message):
     markup = types.InlineKeyboardMarkup()
     for text, fmt in QUALITY_OPTIONS:
         markup.add(types.InlineKeyboardButton(text, callback_data=f"{fmt}|{message.text}"))
-    await message.answer("Что ты хочешь скачать?", reply_markup=markup)
+    await message.answer("Выбери качество или формат:", reply_markup=markup)
 
 @dp.callback_query_handler()
 async def download_video(callback: types.CallbackQuery):
-    await callback.answer("Скачиваю...")
+    await callback.answer("⏬ Скачиваю...")
     fmt, url = callback.data.split("|")
     user_id = callback.from_user.id
 
@@ -45,7 +46,7 @@ async def download_video(callback: types.CallbackQuery):
         'noplaylist': True,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3'
+            'preferredcodec': 'mp3',
         }] if 'audio' in fmt else []
     }
 
@@ -59,15 +60,10 @@ async def download_video(callback: types.CallbackQuery):
         await bot.send_chat_action(user_id, types.ChatActions.UPLOAD_DOCUMENT)
         with open(file_path, 'rb') as f:
             await bot.send_document(user_id, f)
+
         os.remove(file_path)
     except Exception as e:
-        await callback.message.answer(f"⚠️ Ошибка: {e}")
+        await callback.message.answer(f"⚠️ Ошибка при скачивании: {e}")
 
----
-
-### 📄 2. `requirements.txt`
-
-```txt
-aiogram==2.25.2
-yt-dlp
-ffmpeg-python
+if __name__ == '__main__':
+    executor.start_polling(dp, skip_updates=True)
