@@ -1,101 +1,73 @@
 import os
 import logging
-import asyncio
 from aiogram import Bot, Dispatcher, executor, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
 from yt_dlp import YoutubeDL
 
-API_TOKEN = 'PASTE_YOUR_BOT_TOKEN_HERE'  # 👈 сюда вставь свой токен
-
-# Установка ffmpeg (автоустановка на Railway)
-os.system("apt update && apt install -y ffmpeg")
+API_TOKEN = os.getenv("BOT_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
+dp = Dispatcher(bot)
 
-user_links = {}
-
-class DownloadState(StatesGroup):
-    choosing_format = State()
-    choosing_quality = State()
-
-format_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-format_kb.add(KeyboardButton("🎬 Видео"), KeyboardButton("🎧 Музыка (mp3)"))
-
-qualities = ["best", "2160p", "1440p", "1080p", "720p", "480p", "360p", "240p", "144p"]
-quality_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-for q in qualities:
-    quality_kb.add(KeyboardButton(q))
+QUALITY_OPTIONS = [
+    ("🎞 4K", "bestvideo[height<=2160]+bestaudio"),
+    ("🎞 2K", "bestvideo[height<=1440]+bestaudio"),
+    ("🎞 1080p", "bestvideo[height<=1080]+bestaudio"),
+    ("🎞 720p", "bestvideo[height<=720]+bestaudio"),
+    ("🎞 480p", "bestvideo[height<=480]+bestaudio"),
+    ("🎞 360p", "bestvideo[height<=360]+bestaudio"),
+    ("🎞 240p", "bestvideo[height<=240]+bestaudio"),
+    ("🎞 144p", "bestvideo[height<=144]+bestaudio"),
+    ("🎧 MP3 (только аудио)", "bestaudio")
+]
 
 @dp.message_handler(commands=['start'])
-async def start(message: types.Message):
-    await message.answer("Пришли ссылку на видео (YouTube, TikTok, Instagram и др.).")
+async def send_welcome(message: types.Message):
+    await message.answer("Привет! Отправь мне ссылку на видео с YouTube, TikTok, Instagram или др.")
 
-@dp.message_handler(lambda message: message.text and message.text.startswith("http"))
-async def handle_link(message: types.Message, state: FSMContext):
-    user_links[message.from_user.id] = message.text
-    await message.answer("🔽 Что ты хочешь скачать?", reply_markup=format_kb)
-    await DownloadState.choosing_format.set()
+@dp.message_handler(lambda message: message.text.startswith("http"))
+async def handle_url(message: types.Message):
+    markup = types.InlineKeyboardMarkup()
+    for text, fmt in QUALITY_OPTIONS:
+        markup.add(types.InlineKeyboardButton(text, callback_data=f"{fmt}|{message.text}"))
+    await message.answer("Что ты хочешь скачать?", reply_markup=markup)
 
-@dp.message_handler(state=DownloadState.choosing_format)
-async def choose_format(message: types.Message, state: FSMContext):
-    if message.text == "🎧 Музыка (mp3)":
-        url = user_links.get(message.from_user.id)
-        await message.answer("📥 Скачиваю музыку...")
-        try:
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': 'music.%(ext)s',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'quiet': True,
-            }
-            with YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            with open("music.mp3", "rb") as audio:
-                await message.answer_audio(audio)
-            os.remove("music.mp3")
-        except Exception as e:
-            await message.answer(f"⚠️ Ошибка: {str(e)}")
-        await state.finish()
-    elif message.text == "🎬 Видео":
-        await message.answer("Выбери качество:", reply_markup=quality_kb)
-        await DownloadState.choosing_quality.set()
-    else:
-        await message.answer("Пожалуйста, выбери формат из меню.")
+@dp.callback_query_handler()
+async def download_video(callback: types.CallbackQuery):
+    await callback.answer("Скачиваю...")
+    fmt, url = callback.data.split("|")
+    user_id = callback.from_user.id
 
-@dp.message_handler(state=DownloadState.choosing_quality)
-async def choose_quality(message: types.Message, state: FSMContext):
-    quality = message.text
-    url = user_links.get(message.from_user.id)
-    await message.answer(f"📥 Скачиваю видео ({quality})...")
+    ydl_opts = {
+        'format': fmt,
+        'outtmpl': f'{user_id}.%(ext)s',
+        'quiet': True,
+        'noplaylist': True,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3'
+        }] if 'audio' in fmt else []
+    }
+
     try:
-        filename = "video.%(ext)s"
-        ydl_opts = {
-            'format': f'bestvideo[height={quality[:-1]}]+bestaudio/best' if quality != "best" else 'best',
-            'outtmpl': filename,
-            'merge_output_format': 'mp4',
-            'quiet': True,
-        }
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             file_path = ydl.prepare_filename(info)
-            if not file_path.endswith(".mp4"):
-                base = os.path.splitext(file_path)[0]
-                file_path = base + ".mp4"
-        with open(file_path, "rb") as video:
-            await message.answer_video(video, caption=info.get("title", ""))
+            if 'audio' in fmt:
+                file_path = file_path.rsplit('.', 1)[0] + '.mp3'
+
+        await bot.send_chat_action(user_id, types.ChatActions.UPLOAD_DOCUMENT)
+        with open(file_path, 'rb') as f:
+            await bot.send_document(user_id, f)
         os.remove(file_path)
     except Exception as e:
-        await message.answer(f"⚠️ Ошибка: {str(e)}")
-    await state.finish()
+        await callback.message.answer(f"⚠️ Ошибка: {e}")
 
-if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+---
+
+### 📄 2. `requirements.txt`
+
+```txt
+aiogram==2.25.2
+yt-dlp
+ffmpeg-python
